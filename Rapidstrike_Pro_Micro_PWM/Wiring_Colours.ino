@@ -38,4 +38,9 @@
  * Purple - gnd
  * Grey   - Rev Switch
  * 
+ * 
+ * Grey   - Gnd
+ * Purple - Go (To N-Channel)
+ * Blue   - Stop (to P-Channel)
+ * 
  */

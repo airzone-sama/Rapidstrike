@@ -6,26 +6,13 @@
 #include <Wire.h>
 #include <EEPROM.h>
 
-//Battery + "Bucked" down > 5ish volts in at +5
-//Battery - > GND
 
-//Trigger > D2
-
-// Servo Signal (PULSE) > D9
-// Servo Signal (PULSE) > D10
-
-// Rotary Encoder on 11,12
-// For your own sanity, you will need hardware debounce on the rotary encoder.
-
-
-//----SETTINGS YOU CAN CHANGE
-int BatteryS = 3; //2= 2s, 3= 3s, 4 = 4s 5 = 5s
+int BatteryS = 3; // This changes on bootup
 #define MotorKV 3000 // motors KV. enter your kv here
 int MaxMotorSpeed = 2000; // Reduce this if you want to electronically Limit your RPM / FPS .. 1000 being 0% 2000 being 100%
 #define MotorSpinUpOverheadMS 100 // 150ms for motor to reach max speed from stall assuming no ramp up
 byte MagSize = 18;
 
-// Don't change the below setting 
 
 // ***************************************************************************************************************
 // IMPORTANT NOTE: DO NOT SET BOTH PIN_PUSHERMOTOR AND PIN_PUSHERBRAKE HIGH AT SAME TIME UNLESS YOU WANT FIREWORKS
@@ -41,12 +28,12 @@ byte MagSize = 18;
 #define PIN_PUSHERMOTOR 5 
 #define PIN_OLED_SDA 2
 #define PIN_OLED_SCL 3
-#define PIN_MODE_SELECT_A 7 
-#define PIN_MODE_SELECT_B 8
+#define PIN_MODE_SELECT_A 8 
+#define PIN_MODE_SELECT_B 7
 #define PIN_BATTERYDETECT A3
 #define PIN_MAGRELEASE 19
 #define PIN_JAMDOOR 20
-#define PIN_PUSHERBRAKE 4
+#define PIN_PUSHERBRAKE 18
 
 // Servo Objects
 Servo MainMotor1; 
@@ -121,15 +108,13 @@ bool PusherReset = false;
 bool TriggerReset = true;
 int DartsInMag = 0;
 unsigned int TotalDartsFired = 0;
-int PusherSpeed[] = {1300, 1600, 2000, 1300, 1200, 1400, 2000, 1200}; // 2S Slow, 2S Med, 2S High, 2S Single, 3S Slow, 3S Med, 3S High, 3S SIngle
-int PusherSpeedPWM[] = {40, 65, 100, 40, 15, 33, 55, 100, 33, 15}; // 2s: Slow, Med, High, Single
-int PusherStopMotorSpeed = 1000; 
+unsigned int LifetimeTotalDartsFired = 0;
+int PusherSpeedPWM[] = {40, 65, 100, 40, 15, 
+                        33, 55, 100, 33, 15,
+                        30, 50, 80, 30, 15}; // 2s: Slow, Med, High, Single, retract; 3S; 4S
 byte PusherSpeedIndex = 1; // 0 = Slow, 1 = Med, 2 = High (Add base 3 for 3s)
 bool PusherStopping = false;
 bool PusherRetracting = false;
-#define MaxPusherResetTime 500
-#define PusherRetractSpeed2s 1200
-#define PusherRetractSpeed3s 1100
 
 bool PusherPWMFETOn = false; // Keep track of the PWM FET
 bool PusherBrakeFETOn = false; // Keep track of the brake fet
@@ -139,8 +124,8 @@ bool PusherRequest = false; // False = stop pusher, true = run pusher
 #define PusherRun 2         // Pusher brake is off, PWM is on
 byte CurrentPusherStatus = PusherTransition; // Start in transition mode for boot.
 unsigned long PusherTransitionStart = 0; // Time transition started
-#define PusherOnTransitionTime 50 // 100ms transition time 
-#define PusherOffTransitionTime 25 // 100ms transition time 
+#define PusherOnTransitionTime 10 // 100ms transition time 
+#define PusherOffTransitionTime 2 // 100ms transition time 
 
 // Serial Comms
 #define InputBufferMax 15
@@ -150,10 +135,12 @@ byte SavedBurstLength = 0;
 bool HasSavedMode = false;
 
 // Battery Monitoring
-#define BATTERY_2S_MIN 6.0;
-#define BATTERY_2S_MAX 8.4;
-#define BATTERY_3S_MIN 9.0;
-#define BATTERY_3S_MAX 12.6;
+#define BATTERY_2S_MIN 6.0
+#define BATTERY_2S_MAX 8.4
+#define BATTERY_3S_MIN 9.0
+#define BATTERY_3S_MAX 12.6
+#define BATTERY_4S_MIN 12.0
+#define BATTERY_4S_MAX 16.8
 #define BATTERY_CALFACTOR 0.45 // Adjustment for calibration.
 float BatteryMaxVoltage;
 float BatteryMinVoltage;
@@ -176,6 +163,7 @@ SSD1306AsciiWire display;
 #define ADDR_MAGSIZE 1
 #define ADDR_MOTORSPEED 2
 #define ADDR_BURST 3
+#define ADDR_TDF 4
 
 void setup() {
   float MotorRPM;
@@ -259,10 +247,15 @@ void setup() {
     BatteryMinVoltage = BATTERY_2S_MIN;
     BatteryMaxVoltage = BATTERY_2S_MAX;
   }
-  else
+  else if( BatteryS == 3 )
   {
     BatteryMinVoltage = BATTERY_3S_MIN;
     BatteryMaxVoltage = BATTERY_3S_MAX;
+  }
+  else
+  {
+    BatteryMinVoltage = BATTERY_4S_MIN;
+    BatteryMaxVoltage = BATTERY_4S_MAX;    
   }
 
   Serial.println( F("Booted.") );
@@ -279,12 +272,14 @@ void LoadEEPROM()
   PusherSpeedIndex = EEPROM.read( ADDR_ROF );
   BurstLength = EEPROM.read( ADDR_BURST );
   MagSize = EEPROM.read( ADDR_MAGSIZE );
+  EEPROM.get( ADDR_TDF, LifetimeTotalDartsFired );
 
   Serial.println( F("Read from EEPROM") );
   Serial.println( SetMaxSpeed );
   Serial.println( PusherSpeedIndex );
   Serial.println( BurstLength );
   Serial.println( MagSize );
+  Serial.println( LifetimeTotalDartsFired );
 
   if( (SetMaxSpeed < 30) || (SetMaxSpeed > 100) ) CorruptData = true;
   if( (PusherSpeedIndex < 0) || (PusherSpeedIndex > 2) ) CorruptData = true;
@@ -303,12 +298,13 @@ void LoadEEPROM()
     PusherSpeedIndex = 1;
     BurstLength = 3;
     MagSize = 18;    
+    LifetimeTotalDartsFired = 0;
 
     EEPROM.write( ADDR_MOTORSPEED, SetMaxSpeed );
     EEPROM.write( ADDR_ROF, PusherSpeedIndex );
     EEPROM.write( ADDR_BURST, BurstLength );
     EEPROM.write( ADDR_MAGSIZE, MagSize );
-  
+    EEPROM.put( ADDR_TDF, LifetimeTotalDartsFired );
   }
 
   Serial.println( F("Initialised") );
@@ -316,6 +312,7 @@ void LoadEEPROM()
   Serial.println( PusherSpeedIndex );
   Serial.println( BurstLength );
   Serial.println( MagSize );
+  Serial.println( LifetimeTotalDartsFired );
 
 }
 
@@ -335,6 +332,8 @@ void SetupSelectBattery()
     {
       if( BatSel == 0 )
         BatSel = 1;
+      else if( BatSel == 1 )
+        BatSel = 2;
       else
         BatSel = 0;
     }
@@ -353,13 +352,19 @@ void SetupSelectBattery()
       {
         display.print( F("> 2s\n") );
         display.print( F("  3s\n") );
-        display.print( F("Rev Chg; Trig OK") );
+        display.print( F("  4s") );
+      }
+      else if( BatSel == 1 )
+      {
+        display.print( F("  2s\n") );
+        display.print( F("> 3s\n") );      
+        display.print( F("  4s") );
       }
       else
       {
         display.print( F("  2s\n") );
-        display.print( F("> 3s\n") );      
-        display.print( F("Rev Chg; Trig OK") );
+        display.print( F("  3s\n") );
+        display.print( F("> 4s") );        
       }
 
     }
@@ -368,8 +373,10 @@ void SetupSelectBattery()
 
   if( BatSel == 0 )
     BatteryS = 2;
-  else
+  else if( BatSel == 1 )
     BatteryS = 3;
+  else
+    BatteryS = 4;
 
   display.clear();
   display.setCursor(0, 0);
@@ -779,9 +786,12 @@ void ProcessSerialCommand()
   if( (strcmp( CommandHeader, "SS" ) == 0) && (CurrentSystemMode == MODE_NORMAL) )
   {
     CommandFire = true;
-    HasSavedMode = true;
-    SavedMode = CurrentMode;
-    SavedBurstLength = BurstLength;
+    if( !HasSavedMode ) 
+    {
+      HasSavedMode = true;
+      SavedMode = CurrentMode;
+      SavedBurstLength = BurstLength;
+    }
     CurrentMode = MODE_SINGLESHOT;
     //TriggerReset = true;
     AutoFire = true;
@@ -792,9 +802,12 @@ void ProcessSerialCommand()
   {
     char IntValue[3] = { SerialInputBuffer[3], SerialInputBuffer[4], 0 };
     CommandFire = true;
-    HasSavedMode = true;
-    SavedMode = CurrentMode;
-    SavedBurstLength = BurstLength;
+    if( !HasSavedMode )
+    {
+      HasSavedMode = true;
+      SavedMode = CurrentMode;
+      SavedBurstLength = BurstLength;
+    }
     CurrentMode = MODE_BURSTSHOT;
     BurstLength = constrain( atoi( IntValue ), 1, 99 );
     //TriggerReset = true;
@@ -1046,9 +1059,6 @@ void ProcessPusherReturn()
 {
   static bool LastPusherResetPressed = true;
 
-  //static bool CurrentPusherReset = true;
-  //if( PusherResetBounce.fell() && !CurrentPusher
-
   if( PusherResetPressed != LastPusherResetPressed ) // We've detected a change
   {
     LastPusherResetPressed = PusherResetPressed; // Keep track of the pusher status
@@ -1066,6 +1076,7 @@ void ProcessPusherReturn()
           {
             DartsInMag --; // Count down any misfires though  
             TotalDartsFired ++;
+            LifetimeTotalDartsFired ++;
           }
           return;          
         }
@@ -1087,6 +1098,7 @@ void ProcessPusherReturn()
         {
           DartsInMag --;
           TotalDartsFired ++;
+          LifetimeTotalDartsFired ++;
         }
         
       }
@@ -1096,28 +1108,8 @@ void ProcessPusherReturn()
 }
 
 void StartPusher(bool LastShot)
-{
+{  
   PusherStopping = false;
-  int SelectedIndex;
-  int BaseIndex = 0;
-  
-  if( BatteryS == 3 )
-    BaseIndex = 5;
-  if( CurrentMode == MODE_SINGLESHOT )
-  {
-    SelectedIndex = 3;
-  }
-  else if( LastShot )
-  {
-    SelectedIndex = 0;
-  }
-  else
-  {
-    SelectedIndex = PusherSpeedIndex;
-  }
-  SelectedIndex += BaseIndex;
-
-  //PusherMotor.writeMicroseconds( PusherSpeed[SelectedIndex] );
   PusherRequest = true;
 }
 
@@ -1125,26 +1117,13 @@ void StopPusher()
 {
   Serial.println( F("Pusher Stopped!!") );
   PusherRequest = false;
-  //PusherMotor.writeMicroseconds( PusherStopMotorSpeed );
 }
 
 // Use this to manage requests to handle the pusher state.
 void ProcessPusher()
 {
-/*
-bool PusherPWMFETOn = false; // Keep track of the PWM FET
-bool PusherBrakeFETOn = false; // Keep track of the brake fet
-bool PusherRequest = false; // False = stop pusher, true = run pusher
-#define PusherStop 0     // Pusher brake is on, PWM is off
-#define PusherTransition 1  // Pusher brake is off, PWM is off, waiting for fet caps to discharge
-#define PusherRun 2         // Pusher brake is off, PWM is on
-byte CurrentPusherStatus = PusherTransition; // Start in transition mode for boot.
-unsigned long PusherTransitionStart = 0; // Time transition started
-#define PusherTransitionTime 100 // 100ms transition time 
-*/
-
   // Logic:
-  // 1 - Do we need to chane? If so, initiate transition
+  // 1 - Do we need to change? If so, initiate transition
   // 2 - Are we in transition? If so, write digital 0 to both fets. Keep doing that
   // 3 - Are we out of transition? If so, 
   // 4.a  - Are we wanting to run? Are we already running or just out of transition?
@@ -1217,6 +1196,8 @@ unsigned long PusherTransitionStart = 0; // Time transition started
   
     if( BatteryS == 3 )
       BaseIndex = 5;
+    if( BatteryS == 4 )
+      BaseIndex = 10;
     if( PusherRetracting )
     {
       SelectedIndex = 4;
@@ -1296,7 +1277,14 @@ void ProcessMagRelease()
 
 void ProcessBatteryMonitor()
 {
-  //return;
+  
+  // Only count one in 10 run-through cycles
+  static int RunNumber = 0;
+  RunNumber++;
+  if( RunNumber <= 10 )
+    return;
+  RunNumber = 0;
+  
   #define NUM_SAMPLES 100
   static int CollectedSamples = 0;
   static float SampleAverage = 0;
@@ -1407,6 +1395,8 @@ void Display_MagOut( bool ClearScreen )
     display.print( F("################\n") );
     display.print( F("# MAG DROPPED! #\n") );
     display.print( F("################") );      
+
+    EEPROM.put( ADDR_TDF, LifetimeTotalDartsFired ); // Only save one time.
   }
 
   PusherResetBounce.update();
@@ -1414,16 +1404,11 @@ void Display_MagOut( bool ClearScreen )
   {
     PusherRetracting = true;
     PusherRequest = true;
-    //if( BatteryS == 2 )
-      //PusherMotor.writeMicroseconds( PusherRetractSpeed2s );
-    //else
-      //PusherMotor.writeMicroseconds( PusherRetractSpeed3s );
   }
   else
   {
     PusherRetracting = false;
     PusherRequest = false;
-    //PusherMotor.writeMicroseconds( PusherStopMotorSpeed );
   }
 }
 
@@ -1438,13 +1423,33 @@ void Display_Config( bool ClearScreen )
     display.setFont(ZevvPeep8x16);
     display.setCursor(0, 2);
 
-    char BurstBuffer[3];
+    char BurstBuffer[4];
     sprintf( BurstBuffer, "%2d", BurstLength );
-    char MagBuffer[3];
+    char MagBuffer[4];
     sprintf( MagBuffer, "%2d", MagSize );    
-    char SpeedBuffer[3];
+    char SpeedBuffer[5];
     sprintf( SpeedBuffer, "%3d", SetMaxSpeed );    
-    
+    char TDFBuffer[7];
+    sprintf( TDFBuffer, "%6d", LifetimeTotalDartsFired );    
+
+    Serial.print( "BurstBuf: " );
+    Serial.println( BurstBuffer );
+    Serial.println( BurstLength );
+    Serial.print( "MagBuffer: " );
+    Serial.println( MagBuffer );
+    Serial.println( MagSize );
+    Serial.println( (byte)MagBuffer[0] );
+    Serial.println( (byte)MagBuffer[1] );
+    Serial.println( (byte)MagBuffer[2] );
+    Serial.print( "SpeedBuffer: " );
+    Serial.println( SpeedBuffer );
+    Serial.println( SetMaxSpeed );       
+    Serial.print( "TDFBuffer: " );
+    Serial.println( TDFBuffer );
+    Serial.println( LifetimeTotalDartsFired );
+    Serial.print( "FreeRAM: " );
+    Serial.println( freeRam() );
+        
     switch( MenuItem )
     {
       case 0:
@@ -1495,22 +1500,28 @@ void Display_Config( bool ClearScreen )
         display.print( MagBuffer );
         display.print( F("   ") ); 
         break;
-      default:
-        display.print( F("  ROF: ") );
-        if( PusherSpeedIndex == 0 )
-          display.print( F("L") );
-        else if( PusherSpeedIndex == 1 )
-          display.print( F("M") );
-        else
-          display.print( F("H") );
-        display.print( F("      \n") );
+      case 3:
         display.print( F("  Burst: ") );
         display.print( BurstBuffer );
         display.print( F("   \n") ); 
         display.print( F("> Mag Size: ") );
         display.print( MagBuffer );
-        display.print( F("   ") ); 
-        break;          
+        display.print( F("   \n") );
+        display.print( F("  TDF: ") );
+        display.print( TDFBuffer );
+        display.print( F(" ") );          
+        break;
+      default:          
+        display.print( F("  Burst: ") );
+        display.print( BurstBuffer );
+        display.print( F("   \n") ); 
+        display.print( F("  Mag Size: ") );
+        display.print( MagBuffer );
+        display.print( F("   \n") ); 
+        display.print( F("> TDF: ") );
+        display.print( TDFBuffer );
+        display.print( F(" ") ); 
+        break;
     }
 
     LastMenuItem = MenuItem;
@@ -1519,7 +1530,7 @@ void Display_Config( bool ClearScreen )
   if( RevTriggerBounce.fell() )
   {
     MenuItem++;
-    if( MenuItem > 3 )
+    if( MenuItem > 4 )
       MenuItem = 0;
   }
    
@@ -1665,4 +1676,10 @@ void Display_ScreenHeader( bool ClearScreen )
 
   LastBatteryVoltage = BatteryCurrentVoltage;
   LastTotalDartsFired = TotalDartsFired;
+}
+
+int freeRam () {
+  extern int __heap_start, *__brkval; 
+  int v; 
+  return (int) &v - (__brkval == 0 ? (int) &__heap_start : (int) __brkval); 
 }
