@@ -126,6 +126,9 @@ byte CurrentPusherStatus = PusherTransition; // Start in transition mode for boo
 unsigned long PusherTransitionStart = 0; // Time transition started
 #define PusherOnTransitionTime 10 // 100ms transition time 
 #define PusherOffTransitionTime 2 // 100ms transition time 
+unsigned long TimeLastPusherResetOrActivated = 0; // We are keeping track when the pusher was last reset for anti-jam purposes.
+#define PusherMaxCycleTime 2000   // Max number of time between cycles before we recognise a jam
+bool JamDetected = false;
 
 // Serial Comms
 #define InputBufferMax 15
@@ -152,6 +155,7 @@ bool BatteryFlat = false;
 #define MODE_MAGOUT 2
 #define MODE_LOWBATTERY 3
 #define MODE_NORMAL 4
+#define MODE_JAM 5
 int CurrentSystemMode = MODE_NORMAL;
 
 // Display
@@ -1072,6 +1076,7 @@ void ProcessPusherReturn()
           NumberOfDartsToShoot = 0;
           PusherStopping = true;
           StopPusher();
+          TimeLastPusherResetOrActivated = millis();
           if( DartsInMag > 0 )
           {
             DartsInMag --; // Count down any misfires though  
@@ -1084,6 +1089,7 @@ void ProcessPusherReturn()
         if( NumberOfDartsToShoot > 1 )
         {
           NumberOfDartsToShoot --; // Decrease the number of darts to fire.
+          TimeLastPusherResetOrActivated = millis();
           Serial.print( F("Darts remaining: ") );
           Serial.println( NumberOfDartsToShoot );
         }
@@ -1111,11 +1117,13 @@ void StartPusher(bool LastShot)
 {  
   PusherStopping = false;
   PusherRequest = true;
+  TimeLastPusherResetOrActivated = millis();
 }
 
 void StopPusher()
 {
   Serial.println( F("Pusher Stopped!!") );
+  JamDetected = false;
   PusherRequest = false;
 }
 
@@ -1188,6 +1196,11 @@ void ProcessPusher()
       Serial.println( F( "** ERROR ** Pusher Run Status with Brake FET on!!!" ) );
       return;
     }
+    if( JamDetected )
+    {
+      digitalWrite( PIN_PUSHERMOTOR, LOW );
+      return;
+    }
 
     // PusherSpeedPWM
 
@@ -1211,6 +1224,18 @@ void ProcessPusher()
       SelectedIndex = PusherSpeedIndex;
     }
     SelectedIndex += BaseIndex;
+
+    if( (millis() - TimeLastPusherResetOrActivated) > PusherMaxCycleTime )
+    {
+      // Jam detected
+      digitalWrite( PIN_PUSHERMOTOR, LOW );
+      JamDetected = true;
+      return;
+    }
+    else
+    {
+      JamDetected = false;
+    }
 
     if( PusherSpeedPWM[ SelectedIndex ] == 100 )
     {
@@ -1285,7 +1310,7 @@ void ProcessBatteryMonitor()
     return;
   RunNumber = 0;
   
-  #define NUM_SAMPLES 100
+  #define NUM_SAMPLES 10
   static int CollectedSamples = 0;
   static float SampleAverage = 0;
   float SensorValue = analogRead( PIN_BATTERYDETECT );
@@ -1337,6 +1362,12 @@ void ProcessSystemMode()
     return;
   }
 
+  if( JamDetected ) // Jam is detected
+  {
+    CurrentSystemMode = MODE_JAM;
+    return;
+  }
+  
   CurrentSystemMode = MODE_NORMAL;
 }
 
@@ -1363,6 +1394,9 @@ void ProcessDisplay()
     case MODE_LOWBATTERY:
       Display_LowBatt( ClearScreen );
       break;
+    case MODE_JAM:
+      Display_Jam( ClearScreen );
+      break;
     default:
       Display_Normal( ClearScreen );
       break;
@@ -1384,6 +1418,21 @@ void Display_LowBatt( bool ClearScreen )
   }
 }
 
+void Display_Jam( bool ClearScreen )
+{
+  if( ClearScreen )
+  {
+    Serial.println( F("JAM DETECTED!!") );
+    Serial.println( BatteryCurrentVoltage );
+
+    display.setFont(ZevvPeep8x16);
+    display.setCursor(0, 2);
+    display.print( F("################\n") );
+    display.print( F("# JAM DETECTED #\n") );
+    display.print( F("################") ); 
+  }
+}
+
 void Display_MagOut( bool ClearScreen )
 {
   if( ClearScreen )
@@ -1399,9 +1448,12 @@ void Display_MagOut( bool ClearScreen )
     EEPROM.put( ADDR_TDF, LifetimeTotalDartsFired ); // Only save one time.
   }
 
+  JamDetected = false;
+
   PusherResetBounce.update();
   if( !(PusherResetBounce.read() == LOW) ) // Currently not in reset position, or close enough
   {
+    TimeLastPusherResetOrActivated = millis();
     PusherRetracting = true;
     PusherRequest = true;
   }
