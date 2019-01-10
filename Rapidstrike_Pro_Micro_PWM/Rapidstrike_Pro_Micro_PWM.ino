@@ -1321,7 +1321,7 @@ void ProcessBatteryMonitor()
   }
   else
   {
-    BatteryCurrentVoltage = (((float)SampleAverage / (float)CollectedSamples * 5.0)  / 1024.0 * (float)((47 + 22) / 22)) + BATTERY_CALFACTOR;  // Voltage dividor - 47k and 10k
+    BatteryCurrentVoltage = (((float)SampleAverage / (float)CollectedSamples * 5.0)  / 1024.0 * (float)((47 + 10) / 10)) + BATTERY_CALFACTOR;  // Voltage dividor - 47k and 10k
     if( BatteryCurrentVoltage < BatteryMinVoltage )
     {
       if( BatteryCurrentVoltage > 1.0 ) // If the current voltage is 0, we are probably debugging
