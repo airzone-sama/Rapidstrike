@@ -1063,6 +1063,76 @@ void ProcessPusherReturn()
 {
   static bool LastPusherResetPressed = true;
 
+
+  if( PusherResetBounce.fell() )
+  {
+    if( CommandRev == COMMAND_REV_NONE )
+    {
+      ShotsToFire = 0;
+      Serial.println( "EMERGENCY HALT" );
+    } 
+    if( ShotsToFire > 1 )
+    {
+      ShotsToFire --; // Decrease the number of darts to fire.
+      TimeLastPusherResetOrActivated = millis();
+      Serial.print( F("Darts remaining: ") );
+      Serial.println( ShotsToFire );      
+    }
+    else
+    {
+      ShotsToFire = 0;
+      Serial.println( F("Halt pusher") );
+      FiringLastShot = false;
+      PusherStopping = true;
+      StopPusher(); 
+
+      ExecuteFiring = false;
+      if( AutoFire )
+      {
+        AutoFire = false;
+        if( HasSavedMode )
+        {
+          BurstSize = SavedBurstSize;
+          CurrentFireMode = SavedMode;
+          HasSavedMode = false;
+        }
+        RequestShot = false;
+        AutoRev = false;
+        CommandRev = COMMAND_REV_NONE;
+        ProcessingFireMode = FIRE_MODE_IDLE;
+      }
+      else
+      {
+        ProcessingFireMode = FIRE_MODE_IDLE; 
+        RequestShot = false;      
+        if( HasSavedMode )
+        {
+          BurstSize = SavedBurstSize;
+          CurrentFireMode = SavedMode;
+          HasSavedMode = false;
+        }
+      }
+    }
+  }
+  if( PusherResetBounce.rose() )
+  {
+    if( (ShotsToFire <= 1) && (ExecuteFiring) )
+    {
+      FiringLastShot = true;
+      PusherROF = Pusher_Deceleration;
+      Serial.println( "Running last shot now!" );
+    }
+    else
+    {
+      Serial.println( "Not Last!" );
+      FiringLastShot = false;
+    }
+  }
+
+  return;
+
+
+
   if( PusherResetPressed != LastPusherResetPressed ) // We've detected a change
   {
     LastPusherResetPressed = PusherResetPressed; // Keep track of the pusher status
@@ -1306,11 +1376,11 @@ void ProcessBatteryMonitor()
   // Only count one in 10 run-through cycles
   static int RunNumber = 0;
   RunNumber++;
-  if( RunNumber <= 10 )
+  if( RunNumber <= 200 )
     return;
   RunNumber = 0;
   
-  #define NUM_SAMPLES 10
+  #define NUM_SAMPLES 100
   static int CollectedSamples = 0;
   static float SampleAverage = 0;
   float SensorValue = analogRead( PIN_BATTERYDETECT );
@@ -1321,7 +1391,7 @@ void ProcessBatteryMonitor()
   }
   else
   {
-    BatteryCurrentVoltage = (((float)SampleAverage / (float)CollectedSamples * 5.0)  / 1024.0 * (float)((47 + 10) / 10)) + BATTERY_CALFACTOR;  // Voltage dividor - 47k and 10k
+    BatteryCurrentVoltage = (((float)SampleAverage / (float)CollectedSamples * 5.0)  / 1024.0 * (float)((47.0 + 10.0) / 10.0)) + BATTERY_CALFACTOR;  // Voltage dividor - 47k and 10k
     if( BatteryCurrentVoltage < BatteryMinVoltage )
     {
       if( BatteryCurrentVoltage > 1.0 ) // If the current voltage is 0, we are probably debugging
@@ -1691,8 +1761,8 @@ void Display_Normal( bool ClearScreen )
 
 void Display_ScreenHeader( bool ClearScreen )
 {
-  float LastBatteryVoltage = 99.0;
-  unsigned int LastTotalDartsFired = 9999;
+  static float LastBatteryVoltage = 99.0;
+  static unsigned int LastTotalDartsFired = 9999;
   char Buffer[6];
   
   if( ClearScreen )
